@@ -1,0 +1,26 @@
+TEACHER:
+Guten Morgen Klasse. Heute sprechen wir über den Prozess der Photosynthese.
+
+SPEAKER_01:
+Was genau ist Photosynthese?
+
+TEACHER:
+Photosynthese ist der Prozess, durch den Pflanzen Sonnenlicht in chemische Energie umwandeln.
+
+SPEAKER_02:
+Wo findet dieser Prozess statt?
+
+TEACHER:
+Der Prozess findet hauptsächlich in den Chloroplasten der Pflanzenzellen statt.
+
+SPEAKER_03:
+Welche Rolle spielt dabei das Sonnenlicht?
+
+TEACHER:
+Das Sonnenlicht liefert die Energie, die für die chemische Reaktion benötigt wird.
+
+SPEAKER_01:
+Was brauchen Pflanzen noch außer Sonnenlicht?
+
+TEACHER:
+Pflanzen benötigen auch Kohlendioxid aus der Luft und Wasser aus dem Boden. 
