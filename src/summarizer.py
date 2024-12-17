@@ -1,118 +1,80 @@
 """
-Module for generating structured summaries of transcripts using LLM-based analysis.
-
-This module provides functionality to analyze transcripts and generate structured summaries
-using LangChain and Ollama. It extracts key topics, important questions, and main conclusions
-from the conversation while maintaining factual accuracy through retrieval-augmented generation.
+Module for implementing RAG-based summarization of transcripts.
 """
-
 from typing import List, Dict
-from langchain_ollama import OllamaLLM
-from langchain.prompts import PromptTemplate, ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser, OutputFixingParser
-from langchain_core.runnables import RunnablePassthrough
-from .file_parser import Transcript
-from pydantic import BaseModel, Field
-from .utils.progress import show_progress
-
-class SummaryOutput(BaseModel):
-    """
-    Structured output format for transcript summaries.
-    
-    Attributes:
-        summary (str): A concise overview of the entire transcript's content
-        topics (List[str]): Main topics discussed in the conversation
-        questions (List[str]): Key questions asked by students
-        conclusions (List[str]): Important conclusions or decisions reached
-    """
-    summary: str = Field(description="A brief summary of the entire transcript")
-    topics: List[str] = Field(description="Main topics discussed in the transcript")
-    questions: List[str] = Field(description="Important questions asked by students")
-    conclusions: List[str] = Field(description="Key conclusions or decisions reached")
+from pathlib import Path
+import chromadb
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import Chroma
+from langchain.llms import Ollama
+from langchain.chains import RetrievalQA
+from .file_parser import Statement, TranscriptParser
 
 class TranscriptSummarizer:
     def __init__(self):
-        # Initialize Ollama with the German-capable model
-        self.llm = OllamaLLM(model="llama3.2")
-        
-        # Create output parser with fixing capability
-        base_parser = PydanticOutputParser(pydantic_object=SummaryOutput)
-        self.parser = OutputFixingParser.from_llm(parser=base_parser, llm=self.llm)
-        
-        # Create summarization prompt template
-        self.prompt = PromptTemplate(
-            template="""
-            Analysiere das folgende Transkript eines Gesprächs zwischen Lehrer und Schülern.
-            
-            Transkript:
-            {transcript}
-            
-            {format_instructions}
-            
-            Erstelle eine strukturierte Zusammenfassung mit den folgenden Punkten:
-            1. Eine kurze Zusammenfassung des gesamten Gesprächs (2-3 Sätze)
-            2. Liste der Hauptthemen der Diskussion
-            3. Liste der wichtigen Fragen der Schüler
-            4. Liste der zentralen Erkenntnisse oder Entscheidungen
-            
-            Die Antwort MUSS dem folgenden JSON-Format entsprechen:
-            {{
-                "summary": "Eine kurze Zusammenfassung des Gesprächs...",
-                "topics": ["Thema 1", "Thema 2", ...],
-                "questions": ["Frage 1", "Frage 2", ...],
-                "conclusions": ["Erkenntnis 1", "Erkenntnis 2", ...]
-            }}
-            """,
-            input_variables=["transcript"],
-            partial_variables={"format_instructions": self.parser.get_format_instructions()}
+        # Initialize with German-specific model
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )
+        self.llm = Ollama(model="llama3.2")  # Can be configured for different models
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+        )
+
+    def create_vector_store(self, statements: List[Statement]) -> Chroma:
+        """Create a vector store from the transcript statements."""
+        texts = [f"{s.speaker}: {s.content}" for s in statements]
+        docs = self.text_splitter.create_documents(texts)
         
-        # Create chain
-        self.chain = self.prompt | self.llm | self.parser
-    
-    def summarize(self, transcript: Transcript) -> str:
+        return Chroma.from_documents(
+            documents=docs,
+            embedding=self.embeddings,
+            persist_directory="./chroma_db"
+        )
+
+    def summarize(self, statements: List[Statement]) -> Dict[str, str]:
+        """Generate a summary of the transcript."""
+        vectorstore = self.create_vector_store(statements)
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=self.llm,
+            chain_type="stuff",
+            retriever=vectorstore.as_retriever()
+        )
+
+        # Generate different aspects of the summary
+        summary = {
+            "key_topics": self._get_key_topics(qa_chain),
+            "student_questions": self._summarize_questions(
+                [s for s in statements if s.is_question]
+            ),
+            "main_conclusions": self._get_main_conclusions(qa_chain)
+        }
+
+        return summary
+
+    def _get_key_topics(self, qa_chain: RetrievalQA) -> str:
+        """Extract key topics from the discussion."""
+        query = """
+        Was sind die Hauptthemen dieser Diskussion? 
+        Bitte liste die wichtigsten Themen auf.
         """
-        Generate a structured summary of the transcript.
+        return qa_chain.run(query)
+
+    def _summarize_questions(self, questions: List[Statement]) -> str:
+        """Summarize the main questions asked by students."""
+        if not questions:
+            return "Keine Fragen wurden gestellt."
         
-        Args:
-            transcript (Transcript): The transcript to summarize
-            
-        Returns:
-            SummaryOutput: Structured summary containing key information
-            
-        Raises:
-            ValueError: If the transcript is empty
-            RuntimeError: If LLM processing fails
+        question_texts = [q.content for q in questions]
+        return "\n".join(f"- {q}" for q in question_texts)
+
+    def _get_main_conclusions(self, qa_chain: RetrievalQA) -> str:
+        """Extract main conclusions from the discussion."""
+        query = """
+        Was sind die wichtigsten Schlussfolgerungen oder Entscheidungen 
+        aus dieser Diskussion?
         """
-        if not transcript.statements:
-            raise ValueError("Leeres Transkript kann nicht zusammengefasst werden.")
-            
-        try:
-            with show_progress("Generiere Zusammenfassung..."):
-                # Get full text from transcript
-                full_text = transcript.get_full_text()
-                
-                # Generate structured summary
-                result = self.chain.invoke({"transcript": full_text})
-            
-            # Format the output
-            output = "Zusammenfassung:\n"
-            output += "=" * 50 + "\n"
-            output += result.summary + "\n\n"
-            
-            output += "Hauptthemen:\n"
-            for topic in result.topics:
-                output += f"- {topic}\n"
-                
-            output += "\nWichtige Fragen:\n"
-            for question in result.questions:
-                output += f"- {question}\n"
-                
-            output += "\nZentrale Erkenntnisse:\n"
-            for conclusion in result.conclusions:
-                output += f"- {conclusion}\n"
-            
-            return output
-            
-        except Exception as e:
-            raise Exception(f"Fehler bei der Zusammenfassung: {str(e)}") 
+        return qa_chain.run(query)
